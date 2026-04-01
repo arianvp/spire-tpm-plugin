@@ -205,7 +205,7 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 			}
 		//}
 	        } else {
-			return fmt.Errorf("tpm: AAAHHHAAHHAHA, fixme")
+			return fmt.Errorf("tpm: AAAHHHAAHHAHA, fixme %s %w", selectors, err)
 		}
 
 	} else {
@@ -345,17 +345,23 @@ func (p *Plugin) verifyAWSTPM(ctx context.Context, instanceID string, ekPub []by
 
 func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData, ekPub []byte, identity *identityproviderv1.FetchX509IdentityResponse) ([]string, error) {
 //FIXME unhardcode these
-	node := "test.example.org"
-	expectedSpiffeID := "spiffe://example.org/node/proxmox"
+	node := "foo.example.org:9443"
+	//FIXME make this configurable
+	expectedSpiffeID := "spiffe://example.org/spiffe-pve-ek"
+	//FIXME validate uuid is a uuid and not other chars
 	fullURL, _ := url.JoinPath("https://" + node, "get-ek-cert", string(pveid.VMID), pveid.UUID)
 	i := identity.GetIdentity()
 	if i == nil {
 		return nil, fmt.Errorf("no identity found in response")
 	}
-
-	cert, err := tls.X509KeyPair(bytes.Join(i.CertChain, []byte("\n")), i.PrivateKey)
+	key, err := x509.ParsePKCS8PrivateKey(i.PrivateKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse client certificate/key: %w", err)
+		return nil, fmt.Errorf("failed to parse PKCS#8 private key: %w", err)
+	}
+
+	cert := &tls.Certificate{
+		Certificate: i.CertChain,
+		PrivateKey:  key,
 	}
 
 	certPool := x509.NewCertPool()
@@ -370,7 +376,7 @@ func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				Certificates: []tls.Certificate{cert},
+				Certificates: []tls.Certificate{*cert},
 				RootCAs:      certPool,
 				InsecureSkipVerify: true,
 				VerifyConnection: func(cs tls.ConnectionState) error {
@@ -401,10 +407,8 @@ func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData
 	}
 	defer res.Body.Close()
 
-	//fmt.Printf("Success! Status: %s\n", res.Status)
-	//TrustDomain:     v1.s.config.TrustDomain.Name(),
-	//selectors := []string{"pve:vm_id:" + string(pveid.VMID), "pve:uuid:" + pveid.UUID}
-	return nil, errors.New("Unimplemented")
+	selectors := []string{"pve:vm_id:" + string(pveid.VMID), "pve:uuid:" + pveid.UUID}
+	return selectors, nil
 }
 
 func checkHashAllowed(hashPath, hashEncoded string) bool {
