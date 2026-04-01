@@ -50,17 +50,17 @@ type Plugin struct {
 
 type Config struct {
 	trustDomain        string
-	aws                *AWSConfig `hcl:"aws"`
-	pve                *PVEConfig `hcl:"pve"`
+	AWS                AWSConfig `hcl:"aws"`
+	PVE                PVEConfig `hcl:"pve"`
 }
 
 type AWSConfig struct {
-	enabled         bool   `hcl:"enabled"`
-	discoveryMethod string `hcl:"discovery_method"` // "", "smbios" or "metadata"
+	Enabled         bool   `hcl:"enabled"`
+	DiscoveryMethod string `hcl:"discovery_method"` // "", "smbios" or "metadata"
 }
 
 type PVEConfig struct {
-	enabled         bool   `hcl:"enabled"`
+	Enabled         bool   `hcl:"enabled"`
 }
 
 func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
@@ -217,8 +217,9 @@ func (p *Plugin) generateAttestationData(ctx context.Context) (*common.Attestati
 	}
 
 	conf := p.getConfig()
-	if conf.aws != nil && conf.aws.enabled {
-		method := strings.ToLower(conf.aws.discoveryMethod)
+	if conf.AWS.Enabled {
+		data.AWS = &common.AWSInstanceData{}
+		method := strings.ToLower(conf.AWS.DiscoveryMethod)
 		if method == "" {
 			method = "smbios"
 		}
@@ -240,9 +241,11 @@ func (p *Plugin) generateAttestationData(ctx context.Context) (*common.Attestati
 		}
 	}
 
-	if conf.pve != nil && conf.pve.enabled {
-		data.PVE.UUID = p.getPVEUUIDFromSMBIOS()
-		data.PVE.VMID = p.getPVEVMIDFromSMBIOS()
+	if conf.PVE.Enabled {
+		data.PVE = &common.PVEInstanceData{
+			UUID: p.getPVEUUIDFromSMBIOS(),
+			VMID: p.getPVEVMIDFromSMBIOS(),
+		}
 	}
 
 	return data, aikBytes, nil
@@ -261,7 +264,7 @@ func (p *Plugin) getPVEVMIDFromSMBIOS() int32 {
 	if err != nil {
 		return -1
 	}
-	i64, err := strconv.ParseInt(string(data), 10, 32)
+	i64, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 32)
 	if err != nil {
 		return -1
 	}

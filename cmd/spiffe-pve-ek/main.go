@@ -46,6 +46,7 @@ func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/get-ek-cert/{vmid}/{uuid}", handleGetEKCert).Methods("GET")
 
+	log.Printf("Getting cert from spiffe\n")
 	listener, err := tls.Listen("tcp", ":"+*port, tlsConfig)
 	if err != nil {
 		log.Fatalf("Unable to create TLS listener: %v", err)

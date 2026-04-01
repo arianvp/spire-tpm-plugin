@@ -38,6 +38,7 @@ import (
 	"github.com/google/go-attestation/attest"
 	x509ext "github.com/google/go-attestation/x509"
 	"github.com/hashicorp/hcl"
+	"github.com/spiffe/spire-plugin-sdk/pluginsdk"
 	identityproviderv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/hostservice/server/identityprovider/v1"
 	nodeattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/nodeattestor/v1"
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
@@ -79,6 +80,13 @@ func New() *Plugin {
 
 func NewFromConfig(config *Config) *Plugin {
 	return &Plugin{config: config}
+}
+
+func (p *Plugin) BrokerHostServices(broker pluginsdk.ServiceBroker) error {
+	if !broker.BrokerClient(&p.identityProvider) {
+		return status.Errorf(codes.FailedPrecondition, "IdentityProvider host service is required")
+	}
+	return nil
 }
 
 func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
@@ -163,7 +171,10 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 
 	var selectors []string
 	validEK := false
-	if p.config.AWS.Enabled && attestationData.AWS.InstanceID != "" {
+	if p.config.AWS.Enabled && attestationData.AWS != nil {
+		if attestationData.AWS.InstanceID == "" {
+			return fmt.Errorf("tpm: bad aws data")
+		}
 		pubBytes, _ := x509.MarshalPKIXPublicKey(ek.Public)
 		awsSelectors, err := p.verifyAWSTPM(stream.Context(), attestationData.AWS.InstanceID, pubBytes)
 		if err == nil {
@@ -175,7 +186,10 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 				validEK = true
 			}
 		}
-	} else if p.config.PVE.Enabled && attestationData.PVE.VMID > 0 && attestationData.PVE.UUID != "" {
+	} else if p.config.PVE.Enabled && attestationData.PVE != nil {
+		if attestationData.PVE.VMID <= 0 || attestationData.PVE.UUID == "" {
+			return fmt.Errorf("tpm: bad pve data %d %s", attestationData.PVE.VMID, attestationData.PVE.UUID)
+		}
 		resp, err := p.identityProvider.FetchX509Identity(stream.Context(), &identityproviderv1.FetchX509IdentityRequest{})
 		if err != nil {
 			return status.Errorf(codes.InvalidArgument, "tpm: something went wrong getting our identity: %v", err)
@@ -189,6 +203,9 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 			} else {
 				validEK = true
 			}
+		//}
+	        } else {
+			return fmt.Errorf("tpm: AAAHHHAAHHAHA, fixme")
 		}
 
 	} else {
@@ -384,7 +401,7 @@ func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData
 	}
 	defer res.Body.Close()
 
-	fmt.Printf("Success! Status: %s\n", res.Status)
+	//fmt.Printf("Success! Status: %s\n", res.Status)
 	//TrustDomain:     v1.s.config.TrustDomain.Name(),
 	//selectors := []string{"pve:vm_id:" + string(pveid.VMID), "pve:uuid:" + pveid.UUID}
 	return nil, errors.New("Unimplemented")
