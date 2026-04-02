@@ -42,7 +42,7 @@ if ($phase eq 'pre-start') {
     my $smbios_data = PVE::QemuServer::parse_smbios1($smbios1) || {};
 
     my $uuid = $smbios_data->{uuid};
-    my $serial = $smbios_data->{serial};
+    my $sku = $smbios_data->{sku};
 
     my $needs_update = 0;
 
@@ -50,18 +50,17 @@ if ($phase eq 'pre-start') {
         warn "VM $vmid: smbios1 is missing a UUID!\n";
     }
 
-    if (!$serial || $serial ne $vmid) {
-        print "VM $vmid: Updating SMBIOS serial from '" . ($serial // "none") . "' to '$vmid'\n";
-        $smbios_data->{serial} = $vmid;
+    if (!$sku || $sku ne $vmid) {
+        print "VM $vmid: Updating SMBIOS sku from '" . ($sku // "none") . "' to '$vmid'\n";
+        $smbios_data->{sku} = $vmid;
         $needs_update = 1;
     }
 
-    # Update SKU if SPIFFE_PVE_CLUSTER is defined
     if (defined($ENV{SPIFFE_PVE_CLUSTER})) {
-        my $target_sku = $ENV{SPIFFE_PVE_CLUSTER};
-        if (!defined($smbios_data->{sku}) || $smbios_data->{sku} ne $target_sku) {
-            print "VM $vmid: Updating SMBIOS sku to '$target_sku'\n";
-            $smbios_data->{sku} = $target_sku;
+        my $target_serial = $ENV{SPIFFE_PVE_CLUSTER};
+        if (!defined($smbios_data->{serial}) || $smbios_data->{serial} ne $target_serial) {
+            print "VM $vmid: Updating SMBIOS serial to '$target_serial'\n";
+            $smbios_data->{serial} = $target_serial;
             $needs_update = 1;
         }
     }

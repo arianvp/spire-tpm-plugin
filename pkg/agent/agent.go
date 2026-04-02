@@ -261,7 +261,7 @@ func (p *Plugin) getAWSInstanceIDFromSMBIOS() string {
 }
 
 func (p *Plugin) getPVEVMIDFromSMBIOS() int32 {
-	data, err := os.ReadFile("/sys/devices/virtual/dmi/id/product_serial")
+	data, err := os.ReadFile("/sys/devices/virtual/dmi/id/product_sku")
 	if err != nil {
 		return -1
 	}
@@ -281,7 +281,7 @@ func (p *Plugin) getPVEUUIDFromSMBIOS() string {
 }
 
 func (p *Plugin) getPVECUIDFromSMBIOS() string {
-	data, err := os.ReadFile("/sys/devices/virtual/dmi/id/product_sku")
+	data, err := os.ReadFile("/sys/devices/virtual/dmi/id/product_serial")
 	if err != nil {
 		return ""
 	}

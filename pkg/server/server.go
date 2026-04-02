@@ -55,10 +55,10 @@ import (
 
 type Config struct {
 	trustDomain string
-	CaPath      string    `hcl:"ca_path"`
-	HashPath    string    `hcl:"hash_path"`
-	AWS         AWSConfig `hcl:"aws"`
-	PVE         PVEConfig `hcl:"pve"`
+	CaPath      string          `hcl:"ca_path"`
+	HashPath    string          `hcl:"hash_path"`
+	AWS         AWSConfig       `hcl:"aws"`
+	PVE         PVEGlobalConfig `hcl:"pve"`
 }
 
 type AWSConfig struct {
@@ -66,11 +66,15 @@ type AWSConfig struct {
 	ValidateWithHashPath *bool `hcl:"validate_hash_path"`
 }
 
+type PVEGlobalConfig struct {
+	Enabled  bool                 `hcl:"enabled"`
+	Clusters map[string]PVEConfig `hcl:"clusters"`
+}
+
 type PVEConfig struct {
-	Enabled              bool     `hcl:"enabled"`
 	ValidateWithHashPath *bool    `hcl:"validate_hash_path"`
-	Hosts                []string `hcl:"hosts"`              // List of PVE control plane hosts
-	Port                 int      `hcl:"port"`               // Optional port, defaults to 9443
+	Hosts                []string `hcl:"hosts"`                // List of PVE control plane hosts
+	Port                 int      `hcl:"port"`                 // Optional port, defaults to 9443
 	ExpectedSpiffeID     string   `hcl:"expected_spiffe_id"` // SPIFFE ID to validate on PVE nodes
 }
 
@@ -114,11 +118,20 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	}
 
 	if config.PVE.Enabled {
-		if config.PVE.Port == 0 {
-			config.PVE.Port = 9443
+		if len(config.PVE.Clusters) == 0 {
+			return nil, errors.New("at least one pve cluster must be defined when pve is enabled")
 		}
-		if len(config.PVE.Hosts) == 0 {
-			return nil, errors.New("pve hosts list is required when pve is enabled")
+		for name, cluster := range config.PVE.Clusters {
+			if cluster.Port == 0 {
+				cluster.Port = 9443
+			}
+			if len(cluster.Hosts) == 0 {
+				return nil, fmt.Errorf("pve hosts list is required for cluster %s", name)
+			}
+			if cluster.ExpectedSpiffeID == "" {
+				cluster.ExpectedSpiffeID = "spiffe://" + req.CoreConfiguration.TrustDomain + "/spiffe-pve-ek"
+			}
+			config.PVE.Clusters[name] = cluster
 		}
 	}
 
@@ -145,10 +158,6 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 
 	if config.CaPath == "" && config.HashPath == "" {
 		return nil, errors.New("either ca_path, hash_path, or both are required")
-	}
-
-	if config.PVE.ExpectedSpiffeID == "" {
-		config.PVE.ExpectedSpiffeID = "spiffe://" + req.CoreConfiguration.TrustDomain + "/spiffe-pve-ek"
 	}
 
 	config.trustDomain = req.CoreConfiguration.TrustDomain
@@ -212,6 +221,11 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 			}
 		}
 	} else if p.config.PVE.Enabled && attestationData.PVE != nil {
+		clusterConf, ok := p.config.PVE.Clusters[attestationData.PVE.CUID]
+		if !ok {
+			return status.Errorf(codes.PermissionDenied, "tpm: unknown pve cluster cuid: %s", attestationData.PVE.CUID)
+		}
+
 		if attestationData.PVE.VMID <= 0 || attestationData.PVE.UUID == "" {
 			return fmt.Errorf("tpm: bad pve data %d %s", attestationData.PVE.VMID, attestationData.PVE.UUID)
 		}
@@ -221,16 +235,16 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 		}
 
 		//pubBytes, _ := x509.MarshalPKIXPublicKey(ek.Public)
-		pveSelectors, err := p.verifyPVETPM(stream.Context(), attestationData.PVE, ek.Public, resp)
+		pveSelectors, err := p.verifyPVETPM(stream.Context(), attestationData.PVE, ek.Public, resp, clusterConf)
 		if err == nil {
 			selectors = append(selectors, pveSelectors...)
-			if p.config.PVE.ValidateWithHashPath == nil || (p.config.PVE.ValidateWithHashPath != nil && *p.config.PVE.ValidateWithHashPath == true) {
+			if clusterConf.ValidateWithHashPath == nil || (clusterConf.ValidateWithHashPath != nil && *clusterConf.ValidateWithHashPath == true) {
 				validEK = checkHashAllowed(p.config.HashPath, hashEncoded)
 			} else {
 				validEK = true
 			}
 		//}
-	        } else {
+		} else {
 			return fmt.Errorf("tpm: AAAHHHAAHHAHA, fixme %s %w", selectors, err)
 		}
 
@@ -276,7 +290,7 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 		}
 
 		opts := x509.VerifyOptions{
-			Roots:     roots,
+			Roots: roots,
 			// NOTE: the only ExtKeyUsage that TPM 2.0 sets is the optional 'tcg-kp-EKCertificate' key usage.
 			// This is already checked by the x509ext package.
 			// An empty KeyUsages defaults to x509.ExtKeyUsageServerAuth which is not set on EK Certs.
@@ -368,8 +382,7 @@ func (p *Plugin) verifyAWSTPM(ctx context.Context, instanceID string, ekPub []by
 	return []string{"aws:instance_id:" + instanceID}, nil
 }
 
-func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData, ekPub crypto.PublicKey, identity *identityproviderv1.FetchX509IdentityResponse) ([]string, error) {
-	conf := p.config.PVE
+func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData, ekPub crypto.PublicKey, identity *identityproviderv1.FetchX509IdentityResponse, conf PVEConfig) ([]string, error) {
 
 	i := identity.GetIdentity()
 	if i == nil {
@@ -436,7 +449,7 @@ func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData
 		lookupURL, _ := url.JoinPath("https://"+host+":"+strconv.Itoa(conf.Port), "vm-to-node", strconv.Itoa(int(pveid.VMID)))
 		res, err := client.Get(lookupURL)
 		if err != nil {
-			return nil, fmt.Errorf("could not resolve VM %d to a node after %d retries %w", int(pveid.VMID), try, err)
+			// return nil, fmt.Errorf("could not resolve VM %d to a node after %d retries %w", int(pveid.VMID), try, err)
 			continue
 		}
 		if res.StatusCode != http.StatusOK {
