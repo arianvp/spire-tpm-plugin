@@ -243,6 +243,7 @@ func (p *Plugin) generateAttestationData(ctx context.Context) (*common.Attestati
 
 	if conf.PVE.Enabled {
 		data.PVE = &common.PVEInstanceData{
+			CUID: p.getPVECUIDFromSMBIOS(),
 			UUID: p.getPVEUUIDFromSMBIOS(),
 			VMID: p.getPVEVMIDFromSMBIOS(),
 		}
@@ -273,6 +274,14 @@ func (p *Plugin) getPVEVMIDFromSMBIOS() int32 {
 
 func (p *Plugin) getPVEUUIDFromSMBIOS() string {
 	data, err := os.ReadFile("/sys/devices/virtual/dmi/id/product_uuid")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (p *Plugin) getPVECUIDFromSMBIOS() string {
+	data, err := os.ReadFile("/sys/devices/virtual/dmi/id/product_sku")
 	if err != nil {
 		return ""
 	}

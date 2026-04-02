@@ -45,6 +45,7 @@ type AWSInstanceData struct {
 }
 
 type PVEInstanceData struct {
+	CUID string `json:"cuid"`
 	UUID string `json:"uuid"`
 	VMID int32  `json:"vmid"`
 }

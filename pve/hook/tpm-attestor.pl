@@ -15,6 +15,22 @@ my $phase = shift;
 if ($phase eq 'pre-start') {
     print "TPM-ATTESTOR: Starting extraction for VM $vmid\n";
 
+    # Load environment variables from default.env if it exists
+    my $env_file = '/etc/spiffe/pve-ek/default.env';
+    if (-f $env_file) {
+        if (open(my $fh, '<', $env_file)) {
+            while (my $line = <$fh>) {
+                chomp $line;
+                next if $line =~ /^\s*#/ || $line !~ /=/; # Skip comments or lines without '='
+                my ($key, $val) = split('=', $line, 2);
+                $key =~ s/^\s+|\s+$//g;
+                $val =~ s/^\s+|\s+$//g;
+                $ENV{$key} = $val;
+            }
+            close $fh;
+        }
+    }
+
     my $conf = PVE::QemuConfig->load_config($vmid);
     my $storecfg = PVE::Storage::config();
 
@@ -40,6 +56,16 @@ if ($phase eq 'pre-start') {
         $needs_update = 1;
     }
 
+    # Update SKU if SPIFFE_PVE_CLUSTER is defined
+    if (defined($ENV{SPIFFE_PVE_CLUSTER})) {
+        my $target_sku = $ENV{SPIFFE_PVE_CLUSTER};
+        if (!defined($smbios_data->{sku}) || $smbios_data->{sku} ne $target_sku) {
+            print "VM $vmid: Updating SMBIOS sku to '$target_sku'\n";
+            $smbios_data->{sku} = $target_sku;
+            $needs_update = 1;
+        }
+    }
+
     if ($needs_update) {
         $conf->{smbios1} = PVE::QemuServer::print_smbios1($smbios_data);
 
@@ -56,14 +82,14 @@ if ($phase eq 'pre-start') {
     my $tmp_dir = "/var/lib/swtpm/$vmid";
     my $state_file = "$tmp_dir/tpm2-0.0.scope";
     my $ek_path = "$tmp_dir/ek.der";
-    my $uuid_path = "$tmp_dir/ek.der";
+    my $uuid_path = "$tmp_dir/uuid";
 
     eval {
         make_path($tmp_dir) if !-d $tmp_dir;
 
-	open(my $fh, '>', $uuid_path);
-	print $fh $uuid;
-	close $fh;
+        open(my $fh, '>', $uuid_path);
+        print $fh $uuid;
+        close $fh;
 
         print "TPM-ATTESTOR: Mapping volume $tpm_volid\n";
         # map_volume handles the activation and returns the /dev/rbd path
@@ -149,7 +175,7 @@ if ($phase eq 'pre-start') {
     if ($@) {
         if (-e $state_file) {
                 unlink($state_file);
-	}
+        }
         warn "TPM-ATTESTOR ERROR: $@\n";
         # Clean up mapping even on error
         eval { PVE::Storage::unmap_volume($storecfg, $tpm_volid); };

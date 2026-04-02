@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -54,9 +56,9 @@ func main() {
 	tlsConfig := tlsconfig.MTLSServerConfig(source, source, authorizer)
 
 	r := mux.NewRouter()
-	r.HandleFunc("/get-ek-cert/{vmid}/{uuid}", handleGetEKCert).Methods("GET")
-
-	r.HandleFunc("/id-to-node/{vmid}", func(w http.ResponseWriter, r *http.Request) {
+	r.HandleFunc("/ek-cert/{vmid}/{uuid}", handleGetEKCert).Methods("GET")
+	r.HandleFunc("/vm-metadata/{vmid}", handleVMMetadata).Methods("GET")
+	r.HandleFunc("/vm-to-node/{vmid}", func(w http.ResponseWriter, r *http.Request) {
 		handleIDToNode(w, r, *domain)
 	}).Methods("GET")
 
@@ -81,6 +83,12 @@ func main() {
 func handleIDToNode(w http.ResponseWriter, r *http.Request, domain string) {
 	vars := mux.Vars(r)
 	vmid := vars["vmid"]
+	if idInt, err := strconv.ParseInt(vmid, 10, 32); err != nil {
+		http.Error(w, "VM ID invalid", http.StatusBadRequest)
+		return
+	} else {
+		vmid = strconv.FormatInt(idInt, 10)
+	}
 
 	data, err := os.ReadFile("/etc/pve/.vmlist")
 	if err != nil {
@@ -117,9 +125,11 @@ func handleGetEKCert(w http.ResponseWriter, r *http.Request) {
 	vmid := vars["vmid"]
 	providedUUID := vars["uuid"]
 
-	if _, err := strconv.ParseInt(vmid, 10, 32); err != nil {
+	if idInt, err := strconv.ParseInt(vmid, 10, 32); err != nil {
 		http.Error(w, "VM ID invalid", http.StatusBadRequest)
 		return
+	} else {
+		vmid = strconv.FormatInt(idInt, 10)
 	}
 
 	uuidPath := filepath.Join("/var/lib/swtpm", vmid, "uuid")
@@ -144,4 +154,57 @@ func handleGetEKCert(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Write(ekData)
+}
+
+func handleVMMetadata(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	vmid := vars["vmid"]
+
+	if _, err := strconv.Atoi(vmid); err != nil {
+		http.Error(w, "Invalid VM ID", http.StatusBadRequest)
+		return
+	}
+
+	apiPath := fmt.Sprintf("/nodes/localhost/qemu/%s/config", vmid)
+	cmd := exec.Command("pvesh", "get", apiPath, "--output-format", "json")
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		errStr := stderr.String()
+		if strings.Contains(errStr, "404") || strings.Contains(errStr, "not found") {
+			log.Printf("VM %s not found on this node", vmid)
+			http.Error(w, "VM not found on this node", http.StatusNotFound)
+			return
+		}
+
+		log.Printf("pvesh execution error: %v, stderr: %s", err, errStr)
+		http.Error(w, "Internal server error calling pvesh", http.StatusInternalServerError)
+		return
+	}
+
+	var metadata map[string]interface{}
+	if err := json.Unmarshal(stdout.Bytes(), &metadata); err != nil {
+		log.Printf("JSON unmarshal error: %v", err)
+		http.Error(w, "Internal error processing metadata", http.StatusInternalServerError)
+		return
+	}
+
+	for key := range metadata {
+		k := strings.ToLower(key)
+		if strings.HasPrefix(k, "ci") ||
+			strings.HasPrefix(k, "ipconfig") ||
+			k == "sshkeys" ||
+			k == "searchdomain" ||
+			k == "nameserver" ||
+			k == "cipassword" {
+			delete(metadata, key)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(metadata)
 }
