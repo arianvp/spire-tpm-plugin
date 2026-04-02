@@ -60,6 +60,7 @@ if ($phase eq 'pre-start') {
         my $target_serial = $ENV{SPIFFE_PVE_CLUSTER};
         if (!defined($smbios_data->{serial}) || $smbios_data->{serial} ne $target_serial) {
             print "VM $vmid: Updating SMBIOS serial to '$target_serial'\n";
+            $target_serial =~ s/-//g;
             $smbios_data->{serial} = $target_serial;
             $needs_update = 1;
         }

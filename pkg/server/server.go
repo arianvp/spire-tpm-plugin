@@ -62,20 +62,20 @@ type Config struct {
 }
 
 type AWSConfig struct {
-	Enabled              bool  `hcl:"enabled"`
-	ValidateWithHashPath *bool `hcl:"validate_hash_path"`
+	Enabled      bool    `hcl:"enabled"`
+	HashPath     string  `hcl:"hash_path"`
 }
 
 type PVEGlobalConfig struct {
 	Enabled  bool                 `hcl:"enabled"`
-	Clusters map[string]PVEConfig `hcl:"clusters"`
+	Clusters map[string]PVEConfig `hcl:"cluster"`
 }
 
 type PVEConfig struct {
-	ValidateWithHashPath *bool    `hcl:"validate_hash_path"`
 	Hosts                []string `hcl:"hosts"`                // List of PVE control plane hosts
 	Port                 int      `hcl:"port"`                 // Optional port, defaults to 9443
-	ExpectedSpiffeID     string   `hcl:"expected_spiffe_id"` // SPIFFE ID to validate on PVE nodes
+	ExpectedSpiffeID     string   `hcl:"expected_spiffe_id"`   // SPIFFE ID to validate on PVE nodes
+	HashPath             string   `hcl:"hash_path"`            // Optional path to check hashes
 }
 
 //FIXME multicluster support for proxmox?
@@ -118,6 +118,7 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	}
 
 	if config.PVE.Enabled {
+		newClusters := make(map[string]PVEConfig)
 		if len(config.PVE.Clusters) == 0 {
 			return nil, errors.New("at least one pve cluster must be defined when pve is enabled")
 		}
@@ -131,8 +132,14 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 			if cluster.ExpectedSpiffeID == "" {
 				cluster.ExpectedSpiffeID = "spiffe://" + req.CoreConfiguration.TrustDomain + "/spiffe-pve-ek"
 			}
-			config.PVE.Clusters[name] = cluster
+			if cluster.HashPath != "" {
+				if _, err := os.Stat(config.HashPath); os.IsNotExist(err) {
+					return nil, errors.New(fmt.Sprintf("hash_path '%s' does not exist", cluster.HashPath))
+				}
+			}
+			newClusters[strings.ReplaceAll(name, "-", "")] = cluster
 		}
+		config.PVE.Clusters = newClusters
 	}
 
 	if config.CaPath != "" {
@@ -204,6 +211,7 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 	}
 
 	var selectors []string
+	caCheck := false
 	validEK := false
 	if p.config.AWS.Enabled && attestationData.AWS != nil {
 		if attestationData.AWS.InstanceID == "" {
@@ -214,14 +222,15 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 		if err == nil {
 			selectors = append(selectors, awsSelectors...)
 
-			if p.config.AWS.ValidateWithHashPath == nil || (p.config.AWS.ValidateWithHashPath != nil && *p.config.AWS.ValidateWithHashPath == true) {
-				validEK = checkHashAllowed(p.config.HashPath, hashEncoded)
+			if p.config.AWS.HashPath != "" {
+				validEK = checkHashAllowed(p.config.AWS.HashPath, hashEncoded)
 			} else {
 				validEK = true
 			}
 		}
 	} else if p.config.PVE.Enabled && attestationData.PVE != nil {
 		clusterConf, ok := p.config.PVE.Clusters[attestationData.PVE.CUID]
+		hashPath := p.config.PVE.Clusters[attestationData.PVE.CUID].HashPath
 		if !ok {
 			return status.Errorf(codes.PermissionDenied, "tpm: unknown pve cluster cuid: %s", attestationData.PVE.CUID)
 		}
@@ -234,27 +243,27 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 			return status.Errorf(codes.InvalidArgument, "tpm: something went wrong getting our identity: %v", err)
 		}
 
-		//pubBytes, _ := x509.MarshalPKIXPublicKey(ek.Public)
 		pveSelectors, err := p.verifyPVETPM(stream.Context(), attestationData.PVE, ek.Public, resp, clusterConf)
 		if err == nil {
 			selectors = append(selectors, pveSelectors...)
-			if clusterConf.ValidateWithHashPath == nil || (clusterConf.ValidateWithHashPath != nil && *clusterConf.ValidateWithHashPath == true) {
-				validEK = checkHashAllowed(p.config.HashPath, hashEncoded)
+			if hashPath != "" {
+				validEK = checkHashAllowed(hashPath, hashEncoded)
 			} else {
 				validEK = true
 			}
-		//}
 		} else {
-			return fmt.Errorf("tpm: AAAHHHAAHHAHA, fixme %s %w", selectors, err)
+			return fmt.Errorf("tpm: failed to attest. %w", err)
 		}
-
 	} else {
 		if p.config.HashPath != "" {
 			validEK = checkHashAllowed(p.config.HashPath, hashEncoded)
+			caCheck = !validEK
+		} else {
+			caCheck = true
 		}
 	}
 
-	if !validEK && p.config.CaPath != "" && ek.Certificate != nil {
+	if caCheck && p.config.CaPath != "" && ek.Certificate != nil {
 		files, err := os.ReadDir(p.config.CaPath)
 		if err != nil {
 			return status.Errorf(codes.InvalidArgument, "tpm: could not open ca directory: %v", err)
@@ -449,7 +458,6 @@ func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData
 		lookupURL, _ := url.JoinPath("https://"+host+":"+strconv.Itoa(conf.Port), "vm-to-node", strconv.Itoa(int(pveid.VMID)))
 		res, err := client.Get(lookupURL)
 		if err != nil {
-			// return nil, fmt.Errorf("could not resolve VM %d to a node after %d retries %w", int(pveid.VMID), try, err)
 			continue
 		}
 		if res.StatusCode != http.StatusOK {
@@ -478,7 +486,7 @@ func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData
 	fullURL, _ := url.JoinPath("https://"+targetNode, "ek-cert", strconv.Itoa(int(pveid.VMID)), pveid.UUID)
 	res, err := client.Get(fullURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch EK from node %s: %w", targetNode, err)
+		return nil, fmt.Errorf("failed to fetch EK from node")
 	}
 	defer res.Body.Close()
 
@@ -488,7 +496,7 @@ func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData
 
 	pveBody, err := io.ReadAll(res.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read body: %w", err)
+		return nil, fmt.Errorf("failed to read body")
 	}
 
 	block, _ := pem.Decode(pveBody)
@@ -496,15 +504,13 @@ func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData
 		return nil, errors.New("failed to decode PEM block from PVE node")
 	}
 
-	// Parse the PVE body as a certificate
 	pveCert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse PVE cert: %w", err)
 	}
 
-	// Convert both keys to a standard byte format to compare them
 	pveKeyBytes, _ := x509.MarshalPKIXPublicKey(pveCert.PublicKey)
-	attestorKeyBytes, _ := x509.MarshalPKIXPublicKey(ekPub) // ekPub is the 3rd argument
+	attestorKeyBytes, _ := x509.MarshalPKIXPublicKey(ekPub)
 
 	if !bytes.Equal(pveKeyBytes, attestorKeyBytes) {
 		return nil, errors.New("EK mismatch: PVE certificate key does not match attestor key")
@@ -518,7 +524,7 @@ func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData
 	fullURL, _ = url.JoinPath("https://"+targetNode, "vm-metadata", strconv.Itoa(int(pveid.VMID)))
 	res, err = client.Get(fullURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch EK from node %s: %w", targetNode, err)
+		return nil, fmt.Errorf("failed to fetch EK from node")
 	}
 	defer res.Body.Close()
 	bodyBytes, err := io.ReadAll(res.Body)
@@ -547,7 +553,7 @@ func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData
 			if kv[0] == "uuid" && kv[1] == pveid.UUID {
 				uuidOk = true
 			}
-			if kv[0] == "serial" && kv[1] == strconv.Itoa(int(pveid.VMID)) {
+			if kv[0] == "sku" && kv[1] == strconv.Itoa(int(pveid.VMID)) {
 				vmidOk = true
 			}
 		}
