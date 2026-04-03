@@ -33,6 +33,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,6 +52,11 @@ import (
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+)
+
+var (
+	pveStorageRegex = regexp.MustCompile(`^(ide|scsi|virtio|sata)\d+$`)
+	pveNetworkRegex = regexp.MustCompile(`^net\d+$`)
 )
 
 type Config struct {
@@ -76,6 +82,7 @@ type PVEConfig struct {
 	Port                 int      `hcl:"port"`                 // Optional port, defaults to 9443
 	ExpectedSpiffeID     string   `hcl:"expected_spiffe_id"`   // SPIFFE ID to validate on PVE nodes
 	HashPath             string   `hcl:"hash_path"`            // Optional path to check hashes
+	//FIXME consider an option for limiting join by selectors
 }
 
 // Plugin implements the nodeattestor Plugin interface
@@ -515,6 +522,7 @@ func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData
 	}
 
 	selectors := []string{
+		"pve:cuid:" + pveid.CUID,
 		"pve:vm_id:" + strconv.Itoa(int(pveid.VMID)),
 		"pve:uuid:" + pveid.UUID,
 		"pve:node:" + origionalNode,
@@ -571,6 +579,36 @@ func (p *Plugin) verifyPVETPM(ctx context.Context, pveid *common.PVEInstanceData
 			items := strings.Split(val, ";")
 			for _, item := range items {
 				selectors = append(selectors, "pve:tag:"+item)
+			}
+		}
+	}
+	for key, value := range metadata {
+		val, ok := value.(string)
+		if ok {
+			if pveStorageRegex.MatchString(key) {
+				parts := strings.SplitN(val, ",", 2)
+				idParts := strings.SplitN(parts[0], ":", 2)
+				if len(idParts) == 2 {
+					selectors = append(selectors, fmt.Sprintf("pve:storage:%s:%s", idParts[0], idParts[1]))
+				}
+			} else if pveNetworkRegex.MatchString(key) {
+				netParams := make(map[string]string)
+				pairs := strings.Split(val, ",")
+				for _, pair := range pairs {
+					kv := strings.SplitN(pair, "=", 2)
+					if len(kv) == 2 {
+						netParams[kv[0]] = kv[1]
+					}
+				}
+				bridge, hasBridge := netParams["bridge"]
+				tag, hasTag := netParams["tag"]
+				if hasBridge {
+					if hasTag {
+						selectors = append(selectors, fmt.Sprintf("pve:network:%s:%s", bridge, tag))
+					} else {
+						selectors = append(selectors, fmt.Sprintf("pve:network:%s", bridge))
+					}
+				}
 			}
 		}
 	}
