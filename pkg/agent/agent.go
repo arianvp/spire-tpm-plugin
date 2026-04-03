@@ -77,6 +77,12 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	return &configv1.ConfigureResponse{}, nil
 }
 
+func (p *Plugin) Validate(ctx context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+    // Return an empty response to indicate the config is valid,
+    // or implement actual validation logic here.
+    return &configv1.ValidateResponse{}, nil
+}
+
 func New() *Plugin {
 	return &Plugin{}
 }
