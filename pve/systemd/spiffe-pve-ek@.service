@@ -1,0 +1,49 @@
+[Unit]
+Description=SPIFFE PVE EK Daemon %i
+After=network-online.target local-fs.target time-sync.target
+Wants=network-online.target local-fs.target time-sync.target spire-agent.target
+StartLimitIntervalSec=0
+
+[Service]
+WorkingDirectory=/var/lib/spire/agent/%i
+StateDirectory=swtpm
+RuntimeDirectory=swtpm
+RuntimeDirectoryPreserve=true
+ConfigurationDirectory=spiffe/pve-ek
+EnvironmentFile=-/etc/spiffe/default-trust-domain.env
+EnvironmentFile=-/etc/spiffe/pve-ek/default.env
+EnvironmentFile=-/etc/spiffe/pve-ek/%i.env
+ExecStart=/bin/sh -c ' \
+  export SPIFFE_ENDPOINT_SOCKET=${SPIFFE_ENDPOINT_SOCKET:-unix:///var/run/spire/agent/sockets/"$1"/public/api.sock}; \
+  export SPIFFE_ID=${SPIFFE_ID:-"spiffe://$SPIFFE_TRUST_DOMAIN/spire/server"}; \
+  export PORT="${PORT:-9443}"; \
+  if [ "x$DOMAIN" != "x" ]; then \
+    export DOMAIN="-domain $DOMAIN"; \
+  fi; \
+  exec /bin/spiffe-pve-ek \
+    -spiffeid "$SPIFFE_ID" \
+    -port "$PORT" \
+    $DOMAIN' -- %i
+# https://gist.github.com/ageis/f5595e59b1cddb1513d1b425a323db04
+LockPersonality=true
+MemoryDenyWriteExecute=true
+NoNewPrivileges=true
+PrivateDevices=false
+# Needed by plugins
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadOnlyPaths=/
+ReadWritePaths=/var/lib/spire/agent /run/spire/agent
+Restart=always
+RestartSec=5s
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_VSOCK
+RestrictNamespaces=true
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+TasksMax=infinity

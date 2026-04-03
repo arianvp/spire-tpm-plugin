@@ -78,8 +78,6 @@ type PVEConfig struct {
 	HashPath             string   `hcl:"hash_path"`            // Optional path to check hashes
 }
 
-//FIXME multicluster support for proxmox?
-
 // Plugin implements the nodeattestor Plugin interface
 type Plugin struct {
 	nodeattestorv1.UnsafeNodeAttestorServer
