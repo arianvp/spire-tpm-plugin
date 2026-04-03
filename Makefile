@@ -34,10 +34,14 @@ spiffe-pve-ek:
 test:
 	go test ./...
 
-release: $(RELEASE_TARGETS)
+release: $(RELEASE_TARGETS) release-spiffe-pve-ek
 $(RELEASE_TARGETS):
 	mkdir -p releases
 	tar -cvzf $(RELEASES_DIR)/spire_tpm_plugin_$(target_binary)_$(target_os)_$(target_architecture)_$(VERSION).tar.gz -C $(BUILD_DIR)/$(target_os)/$(target_architecture) $(target_binary)$(target_ext)
+
+release-spiffe-pve-ek:
+	mkdir -p releases
+	tar -cvzf $(RELEASES_DIR)/spiffe-pve-ek_linux_amd64_$(VERSION).tar.gz -C $(BUILD_DIR)/linux/amd64 spiffe-pve-ek
 
 docker: $(DOCKER_TARGETS)
 $(DOCKER_TARGETS):
@@ -49,4 +53,4 @@ docker-build:
 clean:
 	rm -rf $(BUILD_DIR) $(RELEASES_DIR)
 
-.PHONY: $(BUILD_TARGETS) $(RELEASE_TARGETS) $(DOCKER_TARGETS) build test release docker clean
+.PHONY: $(BUILD_TARGETS) $(RELEASE_TARGETS) $(DOCKER_TARGETS) build test release docker clean release-spiffe-pve-ek
