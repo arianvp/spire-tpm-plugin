@@ -36,12 +36,7 @@ const (
 type AttestationData struct {
 	EK []byte
 	AK *attest.AttestationParameters
-	AWS *AWSInstanceData
 	PVE *PVEInstanceData
-}
-
-type AWSInstanceData struct {
-	InstanceID string `json:"instance_id"`
 }
 
 type PVEInstanceData struct {
