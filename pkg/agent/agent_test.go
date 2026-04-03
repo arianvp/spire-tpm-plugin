@@ -302,11 +302,14 @@ func loadServerPlugin(t *testing.T, hclConfig string) servernodeattestorv1.NodeA
 
 	nodeAttestorClient := new(servernodeattestorv1.NodeAttestorPluginClient)
 	configClient := new(configv1.ConfigServiceClient)
+
 	plugintest.ServeInBackground(t, plugintest.Config{
 		PluginServer:   servernodeattestorv1.NodeAttestorPluginServer(p),
 		PluginClient:   nodeAttestorClient,
 		ServiceServers: []pluginsdk.ServiceServer{
 			configv1.ConfigServiceServer(p),
+		},
+		HostServiceServers: []pluginsdk.ServiceServer{
 			identityproviderv1.IdentityProviderServiceServer(fakeidentityprovider.New()),
 		},
 		ServiceClients: []pluginsdk.ServiceClient{configClient},
@@ -320,7 +323,6 @@ func loadServerPlugin(t *testing.T, hclConfig string) servernodeattestorv1.NodeA
 	})
 	require.NoError(t, err)
 	return nodeAttestorClient
-
 }
 
 func writeFile(t *testing.T, path string, data []byte, mode os.FileMode) {
