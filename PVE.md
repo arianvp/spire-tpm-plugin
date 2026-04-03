@@ -1,5 +1,9 @@
 # PVE support
 
+## WARNING
+
+This is an early version of PVE support. It has only been lightly tested. Please use with caution.
+
 ### Agent Configuration
 
 ```hcl
