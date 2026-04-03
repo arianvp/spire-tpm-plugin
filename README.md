@@ -51,6 +51,12 @@ NodeAttestor "tpm" {
 | ca_path | string |   | the path to the CA directory | /opt/spire/.data/certs |
 | hash_path | string |   | the path to the Hash directory | /opt/spire/.data/hashes |
 
+### Proxmox support
+
+Attestation of Proxmox TPMs is now supported.
+
+Please read the [PVE.md](PVE.md) file for details.
+
 ### Directory Configuration
 
 For this plugin to work, either `ca_path`, `hash_path`, or both must be configured.

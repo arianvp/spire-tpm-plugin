@@ -17,10 +17,12 @@ import (
 	sim "github.com/google/go-tpm-tools/simulator"
 
 	"github.com/spiffe/spire-plugin-sdk/pluginsdk"
+	identityproviderv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/hostservice/server/identityprovider/v1"
 	"github.com/spiffe/spire-plugin-sdk/plugintest"
 	agentnodeattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/agent/nodeattestor/v1"
 	servernodeattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/nodeattestor/v1"
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
+	"github.com/spiffe/spire/test/fakes/fakeidentityprovider"
 	"github.com/stretchr/testify/require"
 )
 
@@ -300,10 +302,16 @@ func loadServerPlugin(t *testing.T, hclConfig string) servernodeattestorv1.NodeA
 
 	nodeAttestorClient := new(servernodeattestorv1.NodeAttestorPluginClient)
 	configClient := new(configv1.ConfigServiceClient)
+
 	plugintest.ServeInBackground(t, plugintest.Config{
 		PluginServer:   servernodeattestorv1.NodeAttestorPluginServer(p),
 		PluginClient:   nodeAttestorClient,
-		ServiceServers: []pluginsdk.ServiceServer{configv1.ConfigServiceServer(p)},
+		ServiceServers: []pluginsdk.ServiceServer{
+			configv1.ConfigServiceServer(p),
+		},
+		HostServiceServers: []pluginsdk.ServiceServer{
+			identityproviderv1.IdentityProviderServiceServer(fakeidentityprovider.New()),
+		},
 		ServiceClients: []pluginsdk.ServiceClient{configClient},
 	})
 
@@ -315,7 +323,6 @@ func loadServerPlugin(t *testing.T, hclConfig string) servernodeattestorv1.NodeA
 	})
 	require.NoError(t, err)
 	return nodeAttestorClient
-
 }
 
 func writeFile(t *testing.T, path string, data []byte, mode os.FileMode) {

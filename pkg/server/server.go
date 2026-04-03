@@ -31,6 +31,8 @@ import (
 	"github.com/google/go-attestation/attest"
 	x509ext "github.com/google/go-attestation/x509"
 	"github.com/hashicorp/hcl"
+	"github.com/spiffe/spire-plugin-sdk/pluginsdk"
+	identityproviderv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/hostservice/server/identityprovider/v1"
 	nodeattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/nodeattestor/v1"
 	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
 	"google.golang.org/grpc/codes"
@@ -39,16 +41,18 @@ import (
 
 type Config struct {
 	trustDomain string
-	CaPath      string `hcl:"ca_path"`
-	HashPath    string `hcl:"hash_path"`
+	CaPath      string          `hcl:"ca_path"`
+	HashPath    string          `hcl:"hash_path"`
+	PVE         PVEGlobalConfig `hcl:"pve"`
 }
 
 // Plugin implements the nodeattestor Plugin interface
 type Plugin struct {
 	nodeattestorv1.UnsafeNodeAttestorServer
 	configv1.UnsafeConfigServer
-	config *Config
-	m      sync.Mutex
+	config           *Config
+	m                sync.Mutex
+	identityProvider identityproviderv1.IdentityProviderServiceClient
 }
 
 func New() *Plugin {
@@ -57,6 +61,13 @@ func New() *Plugin {
 
 func NewFromConfig(config *Config) *Plugin {
 	return &Plugin{config: config}
+}
+
+func (p *Plugin) BrokerHostServices(broker pluginsdk.ServiceBroker) error {
+	if !broker.BrokerClient(&p.identityProvider) {
+		return status.Errorf(codes.FailedPrecondition, "IdentityProvider host service is required")
+	}
+	return nil
 }
 
 func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
@@ -71,6 +82,11 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	if req.CoreConfiguration.TrustDomain == "" {
 		return nil, errors.New("trust_domain is required")
 	}
+
+	if err := p.validatePVEConfig(config, req.CoreConfiguration.TrustDomain); err != nil {
+		return nil, err
+	}
+
 	if config.CaPath != "" {
 		if _, err := os.Stat(config.CaPath); os.IsNotExist(err) {
 			return nil, errors.New(fmt.Sprintf("ca_path '%s' does not exist", config.CaPath))
@@ -100,6 +116,10 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	p.config = config
 
 	return &configv1.ConfigureResponse{}, nil
+}
+
+func (p *Plugin) Validate(ctx context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+    return &configv1.ValidateResponse{}, nil
 }
 
 func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
@@ -139,13 +159,45 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 		return status.Errorf(codes.InvalidArgument, "tpm: could not get public key hash: %v", err)
 	}
 
+	var selectors []string
+	caCheck := false
 	validEK := false
+	if p.config.PVE.Enabled && attestationData.PVE != nil {
+		clusterConf, ok := p.config.PVE.Clusters[attestationData.PVE.CUID]
+		hashPath := p.config.PVE.Clusters[attestationData.PVE.CUID].HashPath
+		if !ok {
+			return status.Errorf(codes.PermissionDenied, "tpm: unknown pve cluster cuid: %s", attestationData.PVE.CUID)
+		}
 
-	if p.config.HashPath != "" {
-		validEK = checkHashAllowed(p.config.HashPath, hashEncoded)
+		if attestationData.PVE.VMID <= 0 || attestationData.PVE.UUID == "" {
+			return fmt.Errorf("tpm: bad pve data %d %s", attestationData.PVE.VMID, attestationData.PVE.UUID)
+		}
+		resp, err := p.identityProvider.FetchX509Identity(stream.Context(), &identityproviderv1.FetchX509IdentityRequest{})
+		if err != nil {
+			return status.Errorf(codes.InvalidArgument, "tpm: something went wrong getting our identity: %v", err)
+		}
+
+		pveSelectors, err := p.verifyPVETPM(stream.Context(), attestationData.PVE, ek.Public, resp, clusterConf)
+		if err == nil {
+			selectors = append(selectors, pveSelectors...)
+			if hashPath != "" {
+				validEK = checkHashAllowed(hashPath, hashEncoded)
+			} else {
+				validEK = true
+			}
+		} else {
+			return fmt.Errorf("tpm: failed to attest. %w", err)
+		}
+	} else {
+		if p.config.HashPath != "" {
+			validEK = checkHashAllowed(p.config.HashPath, hashEncoded)
+			caCheck = !validEK
+		} else {
+			caCheck = true
+		}
 	}
 
-	if !validEK && p.config.CaPath != "" && ek.Certificate != nil {
+	if caCheck && p.config.CaPath != "" && ek.Certificate != nil {
 		files, err := os.ReadDir(p.config.CaPath)
 		if err != nil {
 			return status.Errorf(codes.InvalidArgument, "tpm: could not open ca directory: %v", err)
@@ -181,7 +233,7 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 		}
 
 		opts := x509.VerifyOptions{
-			Roots:     roots,
+			Roots: roots,
 			// NOTE: the only ExtKeyUsage that TPM 2.0 sets is the optional 'tcg-kp-EKCertificate' key usage.
 			// This is already checked by the x509ext package.
 			// An empty KeyUsages defaults to x509.ExtKeyUsageServerAuth which is not set on EK Certs.
@@ -240,11 +292,12 @@ func (p *Plugin) Attest(stream nodeattestorv1.NodeAttestor_AttestServer) error {
 		return status.Errorf(codes.PermissionDenied, "tpm: incorrect secret from attestor")
 	}
 
+	selectors = append(selectors, "pub_hash:"+hashEncoded)
 	return stream.Send(&nodeattestorv1.AttestResponse{
 		Response: &nodeattestorv1.AttestResponse_AgentAttributes{
 			AgentAttributes: &nodeattestorv1.AgentAttributes{
 				SpiffeId:       common.AgentID(p.config.trustDomain, hashEncoded),
-				SelectorValues: buildSelectors(hashEncoded),
+				SelectorValues: selectors,
 				CanReattest:    true,
 			},
 		},
@@ -263,12 +316,6 @@ func checkHashAllowed(hashPath, hashEncoded string) bool {
 		return true
 	}
 	return false
-}
-
-func buildSelectors(pubHash string) []string {
-	var selectors []string
-	selectors = append(selectors, "pub_hash:"+pubHash)
-	return selectors
 }
 
 func (p *Plugin) getConfiguration() *Config {

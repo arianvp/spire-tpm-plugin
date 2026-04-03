@@ -36,6 +36,13 @@ const (
 type AttestationData struct {
 	EK []byte
 	AK *attest.AttestationParameters
+	PVE *PVEInstanceData
+}
+
+type PVEInstanceData struct {
+	CUID string `json:"cuid"`
+	UUID string `json:"uuid"`
+	VMID int32  `json:"vmid"`
 }
 
 type Challenge struct {

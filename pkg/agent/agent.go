@@ -21,6 +21,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/google/go-attestation/attest"
@@ -44,7 +47,12 @@ type Plugin struct {
 }
 
 type Config struct {
-	trustDomain string
+	trustDomain        string
+	PVE                PVEConfig `hcl:"pve"`
+}
+
+type PVEConfig struct {
+	Enabled         bool   `hcl:"enabled"`
 }
 
 func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) (*configv1.ConfigureResponse, error) {
@@ -69,6 +77,12 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	return &configv1.ConfigureResponse{}, nil
 }
 
+func (p *Plugin) Validate(ctx context.Context, req *configv1.ValidateRequest) (*configv1.ValidateResponse, error) {
+    // Return an empty response to indicate the config is valid,
+    // or implement actual validation logic here.
+    return &configv1.ValidateResponse{}, nil
+}
+
 func New() *Plugin {
 	return &Plugin{}
 }
@@ -79,7 +93,7 @@ func (p *Plugin) AidAttestation(stream nodeattestorv1.NodeAttestor_AidAttestatio
 		return status.Error(codes.FailedPrecondition, "plugin not configured")
 	}
 
-	attestationData, aik, err := p.generateAttestationData()
+	attestationData, aik, err := p.generateAttestationData(stream.Context())
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to generate attestation data: %v", err)
 	}
@@ -158,7 +172,7 @@ func (p *Plugin) calculateResponse(ec *attest.EncryptedCredential, aikBytes []by
 	}, nil
 }
 
-func (p *Plugin) generateAttestationData() (*common.AttestationData, []byte, error) {
+func (p *Plugin) generateAttestationData(ctx context.Context) (*common.AttestationData, []byte, error) {
 	tpm := p.tpm
 	if tpm == nil {
 		var err error
@@ -195,10 +209,50 @@ func (p *Plugin) generateAttestationData() (*common.AttestationData, []byte, err
 		return nil, nil, err
 	}
 
-	return &common.AttestationData{
+	data := &common.AttestationData{
 		EK: ekBytes,
 		AK: &params,
-	}, aikBytes, nil
+	}
+
+	conf := p.getConfig()
+
+	if conf.PVE.Enabled {
+		data.PVE = &common.PVEInstanceData{
+			CUID: p.getPVECUIDFromSMBIOS(),
+			UUID: p.getPVEUUIDFromSMBIOS(),
+			VMID: p.getPVEVMIDFromSMBIOS(),
+		}
+	}
+
+	return data, aikBytes, nil
+}
+
+func (p *Plugin) getPVEVMIDFromSMBIOS() int32 {
+	data, err := os.ReadFile("/sys/devices/virtual/dmi/id/product_sku")
+	if err != nil {
+		return -1
+	}
+	i64, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 32)
+	if err != nil {
+		return -1
+	}
+	return int32(i64)
+}
+
+func (p *Plugin) getPVEUUIDFromSMBIOS() string {
+	data, err := os.ReadFile("/sys/devices/virtual/dmi/id/product_uuid")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (p *Plugin) getPVECUIDFromSMBIOS() string {
+	data, err := os.ReadFile("/sys/devices/virtual/dmi/id/product_serial")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func (p *Plugin) getConfig() *Config {
