@@ -20,7 +20,7 @@ ExecStart=/bin/sh -c ' \
   if [ "x$DOMAIN" != "x" ]; then \
     export DOMAIN="-domain $DOMAIN"; \
   fi; \
-  exec /bin/spiffe-pve-ek \
+  exec /usr/bin/spiffe-pve-ek \
     -spiffeid "$SPIFFE_ID" \
     -port "$PORT" \
     $DOMAIN' -- %i
